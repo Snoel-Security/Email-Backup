@@ -7,12 +7,22 @@ Cronjob auf GitHub Actions, alle 6 Stunden.
 ```
 <Drive-Root-Ordner>/
 ├── mail_archive_state.json          ← Zustand (zuletzt gesicherte UID je IMAP-Ordner)
-└── 2026/
-    └── 2026-08/
-        ├── 2026-08-04_0912_absender@example.com_Betreff der Mail.eml
-        └── Anhaenge/
-            └── 2026-08-04_0912_absender@example.com_Betreff der Mail__rechnung.pdf
+├── 2026/                            ← Posteingang
+│   └── 2026-08/
+│       ├── 2026-08-04_0912_absender@example.com_Betreff der Mail.eml
+│       └── Anhaenge/
+│           └── 2026-08-04_0912_absender@example.com_Betreff der Mail__rechnung.pdf
+├── Gesendet/
+│   └── 2026/2026-08/                ← Dateiname nennt hier den Empfaenger
+├── Geloescht/
+│   └── 2026/2026-08/
+└── Archiv/
+    └── 2026/2026-08/
 ```
+
+Der Posteingang liegt direkt im Wurzelverzeichnis, jeder weitere IMAP-Ordner
+bekommt einen eigenen Zweig. Sonst laegen ein- und ausgehende Mails im selben
+Monatsordner und waeren hinterher nicht mehr auseinanderzuhalten.
 
 ## Eigenschaften
 
@@ -133,27 +143,39 @@ python mail_archive.py
 
 `LOG_LEVEL=DEBUG` liefert ausfuehrlichere Ausgaben.
 
-## IMAP-Ordnernamen bei Hostinger
+## IMAP-Ordner
 
-Hostinger nutzt `.` als Trenner. Ueblich sind:
+Standardmaessig werden `INBOX`, `INBOX.Sent`, `INBOX.Trash` und `INBOX.Archive`
+gesichert (Vorgabe im Workflow). Ordner, die es nicht gibt, werden mit einer
+Warnung uebersprungen — der Lauf bricht deswegen nicht ab.
+
+Jeder Lauf schreibt ausserdem die tatsaechlich vorhandenen Ordner ins Protokoll:
 
 ```
-INBOX, INBOX.Sent, INBOX.Drafts, INBOX.Archive, INBOX.Junk, INBOX.Trash
+INFO  Auf dem Server vorhandene IMAP-Ordner: INBOX, INBOX.Sent, INBOX.Trash, …
 ```
 
-Ordner, die es nicht gibt, werden mit einer Warnung uebersprungen — der Lauf
-bricht deswegen nicht ab. Die genauen Namen zeigt:
+Abweichende Ordner stellt man ueber das Secret `IMAP_FOLDERS` ein
+(kommagetrennt). Der Ablageort in Drive ergibt sich automatisch:
 
-```bash
-python - <<'PY'
-import imaplib, os
-m = imaplib.IMAP4_SSL("imap.hostinger.com", 993)
-m.login(os.environ["IMAP_USER"], os.environ["IMAP_PASS"])
-for zeile in m.list()[1]:
-    print(zeile.decode())
-m.logout()
-PY
+| IMAP-Ordner | Drive-Unterordner |
+| --- | --- |
+| `INBOX` | Wurzelverzeichnis |
+| `INBOX.Sent`, `Sent` | `Gesendet` |
+| `INBOX.Trash`, `Trash` | `Geloescht` |
+| `INBOX.Archive` | `Archiv` |
+| `INBOX.Drafts` | `Entwuerfe` |
+| `INBOX.Junk`, `INBOX.Spam` | `Spam` |
+| alles andere | Ordnername ohne `INBOX.`-Praefix |
+
+Ein eigener Name laesst sich mit Doppelpunkt erzwingen:
+
 ```
+INBOX,INBOX.Sent:Postausgang,INBOX.Kunden:Kundenpost
+```
+
+Bei gesendeten Mails steht im Dateinamen die **Empfaengeradresse** statt des
+Absenders — der waere dort immer die eigene Adresse und damit nutzlos.
 
 ## Neu anfangen
 

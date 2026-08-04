@@ -71,11 +71,9 @@ class Konfig:
         self.imap_port = int(os.environ.get("IMAP_PORT", "993"))
         self.imap_user = os.environ.get("IMAP_USER", "").strip()
         self.imap_pass = os.environ.get("IMAP_PASS", "")
-        self.imap_folders = [
-            f.strip()
-            for f in os.environ.get("IMAP_FOLDERS", "INBOX").split(",")
-            if f.strip()
-        ] or ["INBOX"]
+        self.imap_folders = ordnerliste_lesen(
+            os.environ.get("IMAP_FOLDERS", "INBOX")
+        )
 
         self.drive_root_id = os.environ.get("DRIVE_ROOT_ID", "").strip()
         self.client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
@@ -104,6 +102,76 @@ class Konfig:
             )
         if self.max_per_run < 1:
             raise SystemExit("Abbruch: MAX_PER_RUN muss mindestens 1 sein.")
+
+
+# Zuordnung IMAP-Ordner -> eigener Unterordner in Drive. None bedeutet:
+# direkt im Wurzelverzeichnis, das bleibt dem Posteingang vorbehalten.
+# Die Schluessel sind kleingeschrieben, verglichen wird ohne Gross-/Kleinschreibung.
+STANDARD_UNTERORDNER: dict[str, str | None] = {
+    "inbox": None,
+    "inbox.sent": "Gesendet",
+    "sent": "Gesendet",
+    "sent messages": "Gesendet",
+    "inbox.sent messages": "Gesendet",
+    "inbox.trash": "Geloescht",
+    "trash": "Geloescht",
+    "inbox.deleted messages": "Geloescht",
+    "inbox.archive": "Archiv",
+    "archive": "Archiv",
+    "inbox.drafts": "Entwuerfe",
+    "drafts": "Entwuerfe",
+    "inbox.junk": "Spam",
+    "junk": "Spam",
+    "inbox.spam": "Spam",
+}
+
+
+def unterordner_fuer(imap_ordner: str) -> str | None:
+    """
+    Liefert den Drive-Unterordner, unter dem dieser IMAP-Ordner abgelegt wird.
+
+    Der Posteingang landet direkt im Wurzelverzeichnis, alles andere bekommt
+    einen eigenen Zweig — sonst lagen eingegangene und gesendete Mails im selben
+    Monatsordner und waeren hinterher nicht mehr auseinanderzuhalten.
+    """
+    schluessel = imap_ordner.strip().lower()
+    if schluessel in STANDARD_UNTERORDNER:
+        return STANDARD_UNTERORDNER[schluessel]
+    # Unbekannter Ordner: den Namen selbst verwenden, ohne INBOX-Praefix.
+    name = imap_ordner.strip()
+    for praefix in ("INBOX.", "INBOX/"):
+        if name.upper().startswith(praefix.upper()):
+            name = name[len(praefix):]
+            break
+    return saeubern(name.replace(".", " ").replace("/", " "), 50)
+
+
+def ordnerliste_lesen(rohwert: str) -> list[tuple[str, str | None]]:
+    """
+    Zerlegt IMAP_FOLDERS in Paare (IMAP-Ordner, Drive-Unterordner).
+
+    Kommagetrennt. Optional laesst sich der Zielordner je Eintrag mit einem
+    Doppelpunkt erzwingen, z.B. 'INBOX.Sent:Gesendet'. Ohne Angabe greift die
+    Zuordnung aus STANDARD_UNTERORDNER.
+    """
+    ergebnis: list[tuple[str, str | None]] = []
+    gesehen: set[str] = set()
+    for eintrag in rohwert.split(","):
+        eintrag = eintrag.strip()
+        if not eintrag:
+            continue
+        if ":" in eintrag:
+            ordner, _, label = eintrag.partition(":")
+            ordner, label = ordner.strip(), label.strip()
+            unterordner = saeubern(label, 50) if label else None
+        else:
+            ordner = eintrag
+            unterordner = unterordner_fuer(ordner)
+        if not ordner or ordner.lower() in gesehen:
+            continue
+        gesehen.add(ordner.lower())
+        ergebnis.append((ordner, unterordner))
+    return ergebnis or [("INBOX", None)]
 
 
 def _bool_env(name: str, standard: bool) -> bool:
@@ -139,6 +207,21 @@ def absender_ermitteln(msg: Message) -> str:
     if adresse:
         return adresse
     return name or "unbekannt"
+
+
+def empfaenger_ermitteln(msg: Message) -> str:
+    """
+    Liefert die erste Empfaengeradresse. Wird fuer gesendete Mails verwendet,
+    wo der Absender immer man selbst ist und nichts zur Unterscheidung beitraegt.
+    """
+    roh = msg.get("To") or msg.get("Cc") or ""
+    for teil in header_dekodieren(roh).split(","):
+        name, adresse = parseaddr(teil)
+        if adresse:
+            return adresse
+        if name.strip():
+            return name.strip()
+    return "unbekannt"
 
 
 def datum_ermitteln(msg: Message) -> datetime:
@@ -308,10 +391,16 @@ class DriveAblage:
         self._ordner_cache[schluessel] = ordner_id
         return ordner_id
 
-    def monatsordner(self, dt: datetime) -> str:
-        """Liefert die ID von <Root>/<Jahr>/<Jahr>-<Monat>/."""
+    def monatsordner(self, dt: datetime, unterordner: str | None = None) -> str:
+        """
+        Liefert die ID von <Root>/<Jahr>/<Jahr>-<Monat>/ bzw.
+        <Root>/<Unterordner>/<Jahr>/<Jahr>-<Monat>/ fuer Gesendet, Geloescht usw.
+        """
+        basis = self.root_id
+        if unterordner:
+            basis = self.ordner_holen(unterordner, self.root_id)
         jahr, monat = monats_pfad(dt)
-        jahr_id = self.ordner_holen(jahr, self.root_id)
+        jahr_id = self.ordner_holen(jahr, basis)
         return self.ordner_holen(monat, jahr_id)
 
     # -- Dateien -----------------------------------------------------------
@@ -477,6 +566,33 @@ def imap_verbinden(cfg: Konfig) -> imaplib.IMAP4_SSL:
     return imap
 
 
+def vorhandene_ordner_loggen(imap: imaplib.IMAP4_SSL) -> None:
+    """
+    Schreibt alle auf dem Server vorhandenen IMAP-Ordner ins Protokoll.
+    Reine Diagnose: so laesst sich nachsehen, wie die Ordner wirklich heissen,
+    ohne sich zusaetzlich mit einem Mailprogramm verbinden zu muessen.
+    """
+    try:
+        status, daten = imap.list()
+    except imaplib.IMAP4.error as fehler:
+        log.warning("Ordnerliste nicht abrufbar (%s).", fehler)
+        return
+    if status != "OK" or not daten:
+        return
+
+    namen = []
+    for zeile in daten:
+        if not zeile:
+            continue
+        text = zeile.decode("utf-8", "replace") if isinstance(zeile, bytes) else str(zeile)
+        # Format: (\HasNoChildren) "." INBOX.Sent  — der Name steht am Ende.
+        treffer = re.search(r'"([^"]*)"\s*$', text) or re.search(r"(\S+)\s*$", text)
+        if treffer:
+            namen.append(treffer.group(1))
+    if namen:
+        log.info("Auf dem Server vorhandene IMAP-Ordner: %s", ", ".join(namen))
+
+
 def ordner_waehlen(imap: imaplib.IMAP4_SSL, ordner: str) -> int | None:
     """
     Waehlt den IMAP-Ordner schreibgeschuetzt und liefert dessen UIDVALIDITY.
@@ -578,17 +694,27 @@ def anhaenge_sammeln(msg: Message) -> list[tuple[str, bytes]]:
 
 
 def mail_sichern(
-    ablage: DriveAblage, cfg: Konfig, roh: bytes, uid: int, ordner: str
+    ablage: DriveAblage,
+    cfg: Konfig,
+    roh: bytes,
+    uid: int,
+    ordner: str,
+    unterordner: str | None,
 ) -> None:
     """Legt eine einzelne Mail als .eml (und optional deren Anhaenge) in Drive ab."""
     msg = email.message_from_bytes(roh)
 
     dt = datum_ermitteln(msg)
-    absender = absender_ermitteln(msg)
+    # Bei Gesendetem ist der Absender immer man selbst — dort ist der Empfaenger
+    # die nuetzlichere Information fuer den Dateinamen.
+    if unterordner == "Gesendet":
+        adresse = empfaenger_ermitteln(msg)
+    else:
+        adresse = absender_ermitteln(msg)
     betreff = header_dekodieren(msg.get("Subject")) or "ohne Betreff"
-    name = dateiname_bauen(dt, absender, betreff)
+    name = dateiname_bauen(dt, adresse, betreff)
 
-    monats_id = ablage.monatsordner(dt)
+    monats_id = ablage.monatsordner(dt, unterordner)
     datei_id = ablage.hochladen(monats_id, name, roh, "message/rfc822")
     if datei_id:
         log.info("[%s/UID %d] gesichert: %s", ordner, uid, name)
@@ -620,6 +746,7 @@ def ordner_verarbeiten(
     cfg: Konfig,
     zustand: dict,
     ordner: str,
+    unterordner: str | None,
     budget: int,
 ) -> int:
     """
@@ -653,8 +780,8 @@ def ordner_verarbeiten(
         return 0
 
     log.info(
-        "[%s] %d neue Mail(s) ab UID %d, Budget in diesem Lauf: %d.",
-        ordner, len(uids), letzte_uid + 1, budget,
+        "[%s] %d neue Mail(s) ab UID %d, Ablage in '%s', Budget: %d.",
+        ordner, len(uids), letzte_uid + 1, unterordner or "<Wurzel>", budget,
     )
 
     verarbeitet = 0
@@ -668,7 +795,7 @@ def ordner_verarbeiten(
                 log.warning("[%s/UID %d] konnte nicht geladen werden — uebersprungen.",
                             ordner, uid)
             else:
-                mail_sichern(ablage, cfg, roh, uid, ordner)
+                mail_sichern(ablage, cfg, roh, uid, ordner, unterordner)
         except Exception as fehler:
             # Eine einzelne kaputte Mail darf den Lauf nicht killen. Die UID wird
             # trotzdem als erledigt vermerkt, sonst haengt der Ordner ewig daran.
@@ -698,7 +825,8 @@ def archivieren(cfg: Konfig) -> int:
     imap = imap_verbinden(cfg)
     gesamt = 0
     try:
-        for ordner in cfg.imap_folders:
+        vorhandene_ordner_loggen(imap)
+        for ordner, unterordner in cfg.imap_folders:
             rest = cfg.max_per_run - gesamt
             if rest <= 0:
                 log.info(
@@ -706,7 +834,9 @@ def archivieren(cfg: Konfig) -> int:
                     "der naechste Lauf macht weiter.", cfg.max_per_run,
                 )
                 break
-            gesamt += ordner_verarbeiten(imap, ablage, cfg, zustand, ordner, rest)
+            gesamt += ordner_verarbeiten(
+                imap, ablage, cfg, zustand, ordner, unterordner, rest
+            )
     finally:
         try:
             imap.close()

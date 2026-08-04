@@ -41,7 +41,9 @@ jobs:
           IMAP_PORT: ${{ secrets.IMAP_PORT || '993' }}
           IMAP_USER: ${{ secrets.IMAP_USER }}
           IMAP_PASS: ${{ secrets.IMAP_PASS }}
-          IMAP_FOLDERS: ${{ secrets.IMAP_FOLDERS || 'INBOX' }}
+          # Posteingang, Gesendetes, Papierkorb und Archiv. Nicht vorhandene
+          # Ordner ueberspringt das Script mit einer Warnung.
+          IMAP_FOLDERS: ${{ secrets.IMAP_FOLDERS || 'INBOX,INBOX.Sent,INBOX.Trash,INBOX.Archive' }}
           DRIVE_ROOT_ID: ${{ secrets.DRIVE_ROOT_ID }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
