@@ -1,0 +1,58 @@
+name: Archiv-Umzug (einmalig)
+
+# Einmalige Umstellung: schiebt ein Archiv, das direkt im Drive-Root-Ordner
+# liegt, in einen Unterordner mit dem Namen des Postfachs. Danach hat jedes
+# Postfach seinen eigenen Zweig.
+#
+# Nur manuell startbar. Mehrfaches Ausfuehren schadet nicht: liegt im Root
+# nichts mehr, was dazugehoert, wird schlicht nichts verschoben.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ziel:
+        description: "Name des Zielordners, z.B. die Postfachadresse"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Nicht gleichzeitig mit dem Archivlauf: sonst legt der eine Ordner an,
+# waehrend der andere sie wegschiebt.
+concurrency:
+  group: mail-archiv
+  cancel-in-progress: false
+
+jobs:
+  umziehen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Python 3.12 einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Abhaengigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Archiv umhaengen
+        env:
+          # IMAP wird hier nicht angefasst, die Pflichtpruefung verlangt die
+          # Werte aber trotzdem — also durchreichen.
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          IMAP_PASS: ${{ secrets.IMAP_PASS }}
+          DRIVE_ROOT_ID: ${{ secrets.DRIVE_ROOT_ID }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          UMZUG_ZIEL: ${{ inputs.ziel }}
+        run: python mail_archive.py --umzug

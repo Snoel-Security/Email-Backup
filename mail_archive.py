@@ -470,6 +470,47 @@ class DriveAblage:
         self._namen_im_ordner(ordner_id).add(name)
         return datei["id"]
 
+    def kinder_auflisten(self, ordner_id: str) -> list[dict]:
+        """Listet alle direkten Kinder eines Ordners mit Name, ID und Typ."""
+        eintraege: list[dict] = []
+        seite = None
+        while True:
+            aktuelle_seite = seite
+            antwort = mit_wiederholung(
+                lambda: self.dienst.files()
+                .list(
+                    q=f"'{ordner_id}' in parents and trashed = false",
+                    fields="nextPageToken, files(id, name, mimeType)",
+                    pageSize=1000,
+                    pageToken=aktuelle_seite,
+                    spaces="drive",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                )
+                .execute(),
+                beschreibung="Inhalt auflisten",
+            )
+            eintraege.extend(antwort.get("files", []))
+            seite = antwort.get("nextPageToken")
+            if not seite:
+                break
+        return eintraege
+
+    def verschieben(self, datei_id: str, von_id: str, nach_id: str) -> None:
+        """Haengt eine Datei oder einen Ordner an einen neuen Elternordner um."""
+        mit_wiederholung(
+            lambda: self.dienst.files()
+            .update(
+                fileId=datei_id,
+                addParents=nach_id,
+                removeParents=von_id,
+                fields="id, parents",
+                supportsAllDrives=True,
+            )
+            .execute(),
+            beschreibung="Verschieben",
+        )
+
     # -- Zustandsdatei -----------------------------------------------------
 
     def _state_datei_id(self) -> str | None:
@@ -923,6 +964,48 @@ def auth_flow() -> None:
 # ---------------------------------------------------------------------------
 
 
+def umzug(cfg: Konfig, ziel_name: str) -> None:
+    """
+    Einmalige Umstellung: schiebt ein Archiv, das direkt im Root-Ordner liegt,
+    in einen Unterordner — damit jedes Postfach seinen eigenen Zweig bekommt.
+
+    Bewegt werden ausschliesslich die vom Script selbst angelegten Dinge:
+    Jahresordner (vierstellig), die bekannten Zweige wie 'Gesendet' und die
+    Zustandsdatei. Alles andere im Root-Ordner bleibt unangetastet.
+    """
+    cfg.pruefen()
+    dienst = drive_dienst(cfg)
+    ablage = DriveAblage(dienst, cfg.drive_root_id)
+
+    ziel_name = saeubern(ziel_name, 80)
+    ziel_id = ablage.ordner_holen(ziel_name, cfg.drive_root_id)
+    log.info("Zielordner '%s' bereit.", ziel_name)
+
+    bekannte_zweige = {
+        wert for wert in STANDARD_UNTERORDNER.values() if wert
+    } | {STATE_DATEINAME}
+
+    verschoben = 0
+    for eintrag in ablage.kinder_auflisten(cfg.drive_root_id):
+        name = eintrag["name"]
+        if eintrag["id"] == ziel_id:
+            continue
+        gehoert_dazu = (
+            re.fullmatch(r"\d{4}", name) is not None or name in bekannte_zweige
+        )
+        if not gehoert_dazu:
+            log.info("Bleibt liegen: %s", name)
+            continue
+        try:
+            ablage.verschieben(eintrag["id"], cfg.drive_root_id, ziel_id)
+            log.info("Verschoben: %s -> %s/", name, ziel_name)
+            verschoben += 1
+        except Exception as fehler:
+            log.error("'%s' konnte nicht verschoben werden: %s", name, fehler)
+
+    log.info("Umzug fertig. %d Eintrag/Eintraege verschoben.", verschoben)
+
+
 def main() -> int:
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
@@ -930,8 +1013,26 @@ def main() -> int:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    if "--auth" in sys.argv[1:]:
+    argumente = sys.argv[1:]
+
+    if "--auth" in argumente:
         auth_flow()
+        return 0
+
+    if "--umzug" in argumente:
+        # Zielname als naechstes Argument oder aus UMZUG_ZIEL.
+        stelle = argumente.index("--umzug")
+        ziel = (
+            argumente[stelle + 1]
+            if len(argumente) > stelle + 1 and not argumente[stelle + 1].startswith("-")
+            else os.environ.get("UMZUG_ZIEL", "")
+        )
+        if not ziel.strip():
+            raise SystemExit(
+                "Abbruch: --umzug braucht einen Zielordner, z.B. "
+                "'python mail_archive.py --umzug postfach@example.com'."
+            )
+        umzug(Konfig(), ziel.strip())
         return 0
 
     try:
