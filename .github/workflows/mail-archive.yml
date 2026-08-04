@@ -6,6 +6,10 @@ on:
     - cron: "0 */6 * * *"
   workflow_dispatch:
 
+# Der Job liest nur den eigenen Quellcode aus — mehr Rechte braucht er nicht.
+permissions:
+  contents: read
+
 # Nie zwei Laeufe gleichzeitig: sonst schreiben beide die Zustandsdatei in Drive.
 concurrency:
   group: mail-archiv
