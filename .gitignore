@@ -1,0 +1,14 @@
+# Google-OAuth-Zugangsdaten — gehoeren niemals ins Repository
+client_secret.json
+token.json
+*.credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Testabzuege
+*.eml
+mail_archive_state.json
