@@ -20,6 +20,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    strategy:
+      # Ein Postfach mit falschem Passwort darf die anderen nicht mitreissen.
+      fail-fast: false
+      # Nacheinander statt gleichzeitig: schont das Drive-Kontingent und haelt
+      # die Protokolle lesbar.
+      max-parallel: 1
+      matrix:
+        postfach:
+          # Erstes Postfach: liegt direkt im Drive-Root, dort liegt bereits das
+          # bisherige Archiv. Wird es verschoben, faellt das Archiv auseinander.
+          - name: Postfach 1
+            user_secret: IMAP_USER
+            pass_secret: IMAP_PASS
+            eigener_ordner: false
+          - name: Postfach 2
+            user_secret: IMAP_USER_2
+            pass_secret: IMAP_PASS_2
+            eigener_ordner: true
+          - name: Postfach 3
+            user_secret: IMAP_USER_3
+            pass_secret: IMAP_PASS_3
+            eigener_ordner: true
+
+    name: "archivieren (${{ matrix.postfach.name }})"
+
     steps:
       - name: Repository auschecken
         uses: actions/checkout@v4
@@ -39,15 +64,25 @@ jobs:
         env:
           IMAP_HOST: ${{ secrets.IMAP_HOST || 'imap.hostinger.com' }}
           IMAP_PORT: ${{ secrets.IMAP_PORT || '993' }}
-          IMAP_USER: ${{ secrets.IMAP_USER }}
-          IMAP_PASS: ${{ secrets.IMAP_PASS }}
+          IMAP_USER: ${{ secrets[matrix.postfach.user_secret] }}
+          IMAP_PASS: ${{ secrets[matrix.postfach.pass_secret] }}
           # Posteingang, Gesendetes, Papierkorb und Archiv. Nicht vorhandene
           # Ordner ueberspringt das Script mit einer Warnung.
           IMAP_FOLDERS: ${{ secrets.IMAP_FOLDERS || 'INBOX,INBOX.Sent,INBOX.Trash,INBOX.Archive' }}
           DRIVE_ROOT_ID: ${{ secrets.DRIVE_ROOT_ID }}
+          # Jedes weitere Postfach bekommt einen eigenen Zweig, benannt nach
+          # seiner Adresse — inklusive eigener Zustandsdatei.
+          DRIVE_SUBFOLDER: ${{ matrix.postfach.eigener_ordner && secrets[matrix.postfach.user_secret] || '' }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           SAVE_ATTACHMENTS: ${{ vars.SAVE_ATTACHMENTS || 'true' }}
           MAX_PER_RUN: ${{ vars.MAX_PER_RUN || '300' }}
-        run: python mail_archive.py
+        run: |
+          # Ist fuer dieses Postfach nichts hinterlegt, wird es uebersprungen —
+          # das ist kein Fehler, sondern der Normalfall bei ungenutzten Plaetzen.
+          if [ -z "$IMAP_USER" ] || [ -z "$IMAP_PASS" ]; then
+            echo "::warning::${{ matrix.postfach.name }}: keine Zugangsdaten hinterlegt — uebersprungen."
+            exit 0
+          fi
+          python mail_archive.py

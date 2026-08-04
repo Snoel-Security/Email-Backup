@@ -109,7 +109,9 @@ GOOGLE_REFRESH_TOKEN = 1//09....
 | `GOOGLE_REFRESH_TOKEN` | aus Schritt 3 |
 | `IMAP_HOST` | optional, Standard `imap.hostinger.com` |
 | `IMAP_PORT` | optional, Standard `993` |
-| `IMAP_FOLDERS` | optional, z.B. `INBOX,INBOX.Sent,INBOX.Archive` |
+| `IMAP_FOLDERS` | optional, ueberschreibt die Ordnervorgabe des Workflows |
+| `IMAP_USER_2` / `IMAP_PASS_2` | optional, zweites Postfach |
+| `IMAP_USER_3` / `IMAP_PASS_3` | optional, drittes Postfach |
 
 **Unter „Variables"** (nicht geheim) koennen zusaetzlich gesetzt werden:
 
@@ -128,6 +130,48 @@ Bei einem grossen Postfach greift die Drossel: der erste Lauf sichert 300 Mails,
 der naechste die naechsten 300 usw. Wenn es schneller gehen soll, `MAX_PER_RUN`
 voruebergehend hochsetzen (auf das 30-Minuten-Timeout achten) und den Workflow
 mehrfach manuell starten.
+
+## Mehrere Postfaecher
+
+Der Workflow sichert bis zu drei Postfaecher nacheinander. Das erste liegt
+direkt im Drive-Root, jedes weitere bekommt einen eigenen Zweig, benannt nach
+seiner Adresse:
+
+```
+<Drive-Root-Ordner>/
+├── mail_archive_state.json      ← Zustand Postfach 1
+├── 2026/ …                      ← Postfach 1 (Posteingang)
+├── Gesendet/ …                  ← Postfach 1
+├── noelstein@snoel.de/
+│   ├── mail_archive_state.json  ← eigener Zustand
+│   ├── 2026/ …
+│   └── Gesendet/ …
+└── invoice@snoel.de/
+    └── …
+```
+
+Jedes Postfach fuehrt eine **eigene Zustandsdatei** in seinem eigenen Zweig.
+Sie kommen sich daher nicht in die Quere, auch wenn sie sich denselben
+Root-Ordner teilen.
+
+Hinterlegt werden die Zugangsdaten als Secrets:
+
+| Postfach | Benutzer | Passwort | Ablage |
+| --- | --- | --- | --- |
+| 1 | `IMAP_USER` | `IMAP_PASS` | Wurzelverzeichnis |
+| 2 | `IMAP_USER_2` | `IMAP_PASS_2` | Unterordner = Adresse |
+| 3 | `IMAP_USER_3` | `IMAP_PASS_3` | Unterordner = Adresse |
+
+Postfaecher ohne hinterlegte Secrets werden mit einer Warnung uebersprungen,
+der Lauf bleibt gruen. Ein falsches Passwort bei einem Postfach laesst die
+anderen unberuehrt (`fail-fast: false`).
+
+Das erste Postfach liegt aus einem Grund im Wurzelverzeichnis und nicht in
+einem eigenen Unterordner: dort liegt bereits das Archiv aus den ersten
+Laeufen. Ein Umzug wuerde es in zwei Haelften zerlegen.
+
+Sollen es mehr als drei Postfaecher werden, genuegt ein weiterer Eintrag im
+Matrix-Block von `.github/workflows/mail-archive.yml` plus zwei Secrets.
 
 ## Lokal laufen lassen
 

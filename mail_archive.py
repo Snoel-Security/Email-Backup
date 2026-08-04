@@ -76,6 +76,11 @@ class Konfig:
         )
 
         self.drive_root_id = os.environ.get("DRIVE_ROOT_ID", "").strip()
+        # Optionaler Unterordner unterhalb des Root-Ordners. Damit sichern
+        # mehrere Postfaecher nebeneinander in denselben Drive-Ordner, ohne
+        # sich in die Quere zu kommen — jedes bekommt einen eigenen Zweig
+        # samt eigener Zustandsdatei.
+        self.drive_subfolder = os.environ.get("DRIVE_SUBFOLDER", "").strip()
         self.client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
         self.client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
         self.refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "").strip()
@@ -820,6 +825,14 @@ def archivieren(cfg: Konfig) -> int:
 
     dienst = drive_dienst(cfg)
     ablage = DriveAblage(dienst, cfg.drive_root_id)
+    if cfg.drive_subfolder:
+        name = saeubern(cfg.drive_subfolder, 80)
+        # Ab hier gilt der Unterordner als Wurzel: Jahresordner und die
+        # Zustandsdatei entstehen darin, nicht im gemeinsamen Root.
+        ablage.root_id = ablage.ordner_holen(name, cfg.drive_root_id)
+        log.info("Postfach %s — Ablage im Unterordner '%s'.", cfg.imap_user, name)
+    else:
+        log.info("Postfach %s — Ablage im Wurzelverzeichnis.", cfg.imap_user)
     zustand = ablage.zustand_laden()
 
     imap = imap_verbinden(cfg)
