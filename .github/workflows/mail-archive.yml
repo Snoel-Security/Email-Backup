@@ -18,7 +18,11 @@ concurrency:
 jobs:
   archivieren:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 300 Mails dauerten gemessen rund 12 Minuten. Bei 600 Mails je Postfach
+    # bleibt unter 60 Minuten genug Luft, auch wenn viele grosse Anhaenge
+    # dabei sind. Ein Timeout kostet hoechstens die letzten 25 Mails, weil der
+    # Zustand laufend zwischengespeichert wird.
+    timeout-minutes: 60
 
     strategy:
       # Ein Postfach mit falschem Passwort darf die anderen nicht mitreissen.
@@ -77,7 +81,7 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           SAVE_ATTACHMENTS: ${{ vars.SAVE_ATTACHMENTS || 'true' }}
-          MAX_PER_RUN: ${{ vars.MAX_PER_RUN || '300' }}
+          MAX_PER_RUN: ${{ vars.MAX_PER_RUN || '600' }}
         run: |
           # Ist fuer dieses Postfach nichts hinterlegt, wird es uebersprungen —
           # das ist kein Fehler, sondern der Normalfall bei ungenutzten Plaetzen.
