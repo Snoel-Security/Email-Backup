@@ -1,0 +1,59 @@
+name: Zeitplan wachhalten
+
+# Hintergrund: GitHub deaktiviert geplante Workflows nach 60 Tagen ohne
+# Repository-Aktivitaet. Genau das ist im Oktober 2026 passiert — der
+# Archivlauf stand 13 Tage still, ohne dass es jemandem auffiel.
+#
+# Dieser Workflow setzt die Frist monatlich zurueck. Er tut zweierlei, weil
+# keiner der beiden Wege allein zuverlaessig ist:
+#   1. Er schreibt einen Zeitstempel und committet ihn — das zaehlt als
+#      Aktivitaet und setzt die 60-Tage-Uhr fuer alle Zeitplaene zurueck.
+#   2. Er schaltet den Archivlauf ueber die API wieder ein, falls er doch
+#      einmal deaktiviert wurde.
+
+on:
+  schedule:
+    # Am 1. jedes Monats um 04:17 UTC. Krumme Minute mit Absicht: zur vollen
+    # Stunde stauen sich bei GitHub die Cronjobs und werden verzoegert.
+    - cron: "17 4 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # fuer den Commit
+  actions: write    # um den Archivlauf wieder einzuschalten
+
+# Nicht mit dem Archivlauf kollidieren.
+concurrency:
+  group: mail-archiv-wachhalten
+  cancel-in-progress: false
+
+jobs:
+  wachhalten:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Zeitstempel schreiben und committen
+        run: |
+          mkdir -p .github
+          date -u "+%Y-%m-%dT%H:%M:%SZ" > .github/zuletzt-wachgehalten.txt
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/zuletzt-wachgehalten.txt
+          # Nichts zu committen ist kein Fehler.
+          git diff --staged --quiet && echo "Keine Aenderung." && exit 0
+          git commit -m "Zeitplan wachhalten: $(cat .github/zuletzt-wachgehalten.txt) [skip ci]"
+          git push
+
+      - name: Archivlauf sicherheitshalber einschalten
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sS -X PUT \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/mail-archive.yml/enable"
+          echo "Archivlauf ist eingeschaltet."
